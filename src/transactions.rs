@@ -4,7 +4,10 @@ use solana_client::rpc_response::RpcSimulateTransactionResult;
 use solana_sdk::{
     message::Message, signature::Signature, system_instruction, transaction::Transaction,
 };
+use std::thread as std_thread; // Added for system threads
 use std::{error::Error, time::Instant};
+use tokio::runtime::Builder as TokioRuntimeBuilder;
+use tokio::sync::oneshot; // Added for oneshot channels // Added for thread-local Tokio runtimes
 
 // Minimum balance to leave in sender's account after a transaction, in lamports.
 // This should cover potential future transaction fees or leave a small dust amount.
@@ -129,75 +132,202 @@ pub fn construct_conflicting_transactions(
 
 /// Asynchronously sends a list of prepared transactions to their respective RPC URLs.
 pub async fn send_transactions_concurrently(
-    prepared_transactions: Vec<PreparedTransaction>,
+    prepared_transactions_input: Vec<PreparedTransaction>,
 ) -> Vec<SendAttempt> {
-    if prepared_transactions.is_empty() {
+    if prepared_transactions_input.is_empty() {
         println!("No transactions to send.");
         return Vec::new();
     }
 
-    let mut send_tasks = Vec::new();
+    let num_transactions = prepared_transactions_input.len();
     println!(
-        "Starting to send {} transactions concurrently...",
-        prepared_transactions.len()
+        "Phase 1: Setting up {} system threads for transaction sending...",
+        num_transactions
     );
 
-    for prep_tx in prepared_transactions {
-        let task = tokio::spawn(async move {
-            println!(
-                "Preparing to send Tx (sig: {}) to RPC: {}",
-                prep_tx.signature, prep_tx.rpc_url
-            );
-            let rpc_client = RpcClient::new(prep_tx.rpc_url.clone());
-            let start_time = Instant::now();
+    let mut thread_setups = Vec::with_capacity(num_transactions);
 
-            let result = rpc_client.send_transaction(&prep_tx.transaction);
-            let duration = start_time.elapsed();
+    // Loop 1: Create threads and store (handle, sender_to_thread, receiver_for_result_from_thread, rpc_url_for_logging)
+    for i in 0..num_transactions {
+        let rpc_url_for_thread_logging = prepared_transactions_input[i].rpc_url.clone();
 
-            let send_result = match result {
-                Ok(returned_signature) => {
-                    println!(
-                        "Successfully sent Tx (original sig: {}) via RPC: {}. Returned sig: {}. Time: {}ms",
-                        prep_tx.signature,
-                        prep_tx.rpc_url,
-                        returned_signature,
-                        duration.as_millis()
-                    );
-                    Ok(returned_signature)
-                }
+        let (tx_to_thread, rx_from_main_for_tx) = oneshot::channel::<PreparedTransaction>();
+        let (tx_from_thread_for_result, rx_for_main_for_result) = oneshot::channel::<SendAttempt>();
+
+        let rpc_url_for_closure = rpc_url_for_thread_logging.clone(); // Clone for the closure
+
+        let handle = std_thread::spawn(move || {
+            // Closure takes ownership of rpc_url_for_closure
+            let runtime_result = TokioRuntimeBuilder::new_multi_thread().enable_all().build();
+
+            let runtime = match runtime_result {
+                Ok(rt) => rt,
                 Err(e) => {
                     eprintln!(
-                        "Error sending Tx (original sig: {}) via RPC: {}. Error: {}. Time: {}ms",
-                        prep_tx.signature,
-                        prep_tx.rpc_url,
-                        e,
-                        duration.as_millis()
+                        "Thread for future RPC {}: Failed to create Tokio runtime: {}. Thread will exit.",
+                        rpc_url_for_closure, e // Use the cloned value for closure
                     );
-                    Err(e.to_string())
+                    // tx_from_thread_for_result is dropped, so rx_for_main_for_result.await in main task will error.
+                    return;
                 }
             };
 
-            SendAttempt {
-                rpc_url: prep_tx.rpc_url,
-                original_signature: prep_tx.signature,
-                amount_lamports: prep_tx.amount_lamports,
-                send_result,
-                send_start_instant: start_time,
-                send_duration_ms: duration.as_millis(),
-            }
+            runtime.block_on(async {
+                println!(
+                    "Thread for future RPC {}: Started, waiting for transaction...",
+                    rpc_url_for_closure // Use the cloned value for closure
+                );
+                match rx_from_main_for_tx.await {
+                    Ok(prep_tx) => {
+                        println!(
+                            "Thread for RPC {}: Received Tx (sig: {}), commencing send.",
+                            prep_tx.rpc_url, prep_tx.signature
+                        );
+
+                        let rpc_client = RpcClient::new(prep_tx.rpc_url.clone());
+                        let start_time = Instant::now();
+                        let send_tx_result = rpc_client.send_transaction(&prep_tx.transaction);
+                        let duration = start_time.elapsed();
+
+                        let send_result_outcome = match send_tx_result {
+                            Ok(returned_signature) => {
+                                println!(
+                                    "Thread for RPC {}: Successfully sent Tx (original sig: {}). Returned sig: {}. Time: {}ms",
+                                    prep_tx.rpc_url,
+                                    prep_tx.signature,
+                                    returned_signature,
+                                    duration.as_millis()
+                                );
+                                Ok(returned_signature)
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "Thread for RPC {}: Error sending Tx (original sig: {}). Error: {}. Time: {}ms",
+                                    prep_tx.rpc_url,
+                                    prep_tx.signature,
+                                    e,
+                                    duration.as_millis()
+                                );
+                                Err(e.to_string())
+                            }
+                        };
+
+                        let attempt = SendAttempt {
+                            rpc_url: prep_tx.rpc_url.clone(), // Ensure all fields are from prep_tx
+                            original_signature: prep_tx.signature,
+                            amount_lamports: prep_tx.amount_lamports,
+                            send_result: send_result_outcome,
+                            send_start_instant: start_time,
+                            send_duration_ms: duration.as_millis(),
+                        };
+
+                        if tx_from_thread_for_result.send(attempt).is_err() {
+                            eprintln!(
+                                "Thread for RPC {}: Failed to send result back to main. Original sig: {}.",
+                                prep_tx.rpc_url,
+                                prep_tx.signature
+                            );
+                        }
+                    }
+                    Err(_) => { // RecvError from oneshot channel
+                        eprintln!(
+                            "Thread for future RPC {}: Failed to receive transaction from main. Channel closed. Thread will exit.",
+                            rpc_url_for_closure // Use the cloned value for closure
+                        );
+                        // tx_from_thread_for_result is dropped, so rx_for_main_for_result.await in main task will error.
+                    }
+                }
+            });
         });
-        send_tasks.push(task);
+        // Push the original rpc_url_for_thread_logging (or another clone if it was also needed elsewhere)
+        thread_setups.push((
+            handle,
+            tx_to_thread,
+            rx_for_main_for_result,
+            rpc_url_for_thread_logging,
+        ));
     }
 
-    let mut send_attempts = Vec::new();
-    for task in send_tasks {
-        match task.await {
-            Ok(attempt) => send_attempts.push(attempt),
-            Err(e) => {
-                eprintln!("Tokio task for send_transaction failed (JoinError): {}", e);
+    println!(
+        "Phase 1 complete. All {} threads created and waiting.",
+        thread_setups.len()
+    );
+    println!("Phase 2: Wait 2 seconds and then dispatching transactions to respective threads...");
+    std_thread::sleep(std::time::Duration::from_secs(2));
+
+    let mut result_collectors = Vec::with_capacity(num_transactions);
+    let mut handles_to_join = Vec::with_capacity(num_transactions);
+
+    // Loop 2: Send transactions to threads.
+    for (prep_tx, (handle, sender_to_thread, result_receiver, _thread_rpc_url_for_log)) in
+        prepared_transactions_input
+            .into_iter()
+            .zip(thread_setups.into_iter())
+    {
+        let log_sig_on_dispatch_fail = prep_tx.signature;
+        let log_rpc_on_dispatch_fail = prep_tx.rpc_url.clone();
+
+        if sender_to_thread.send(prep_tx).is_err() {
+            eprintln!(
+                "Main: Failed to dispatch Tx (sig: {}) to thread for RPC {}. The thread will likely error out.",
+                log_sig_on_dispatch_fail, log_rpc_on_dispatch_fail
+            );
+        } else {
+            println!(
+                "Main: Dispatched Tx (sig: {}) to thread for RPC {}.",
+                log_sig_on_dispatch_fail, log_rpc_on_dispatch_fail
+            );
+        }
+        handles_to_join.push(handle);
+        // Store details for logging in case of result collection failure
+        result_collectors.push((
+            result_receiver,
+            log_sig_on_dispatch_fail,
+            log_rpc_on_dispatch_fail,
+        ));
+    }
+
+    println!("Phase 2 complete. All transactions dispatched.",);
+    println!(
+        "Phase 3: Collecting results from {} threads...",
+        result_collectors.len()
+    );
+
+    let mut send_attempts = Vec::with_capacity(result_collectors.len());
+
+    for (receiver, original_sig_for_error, rpc_url_for_error) in result_collectors {
+        match receiver.await {
+            Ok(attempt) => {
+                send_attempts.push(attempt);
+            }
+            Err(_) => {
+                // RecvError from oneshot channel
+                eprintln!(
+                    "Main: Failed to receive result from thread for Tx (original sig: {}, RPC: {}). Channel closed. Thread may have failed/panicked.",
+                    original_sig_for_error, rpc_url_for_error
+                );
             }
         }
     }
+    println!(
+        "Phase 3 complete. All results collected (or failures noted). {} attempts recorded.",
+        send_attempts.len()
+    );
+    println!(
+        "Phase 4: Joining {} system threads...",
+        handles_to_join.len()
+    );
+
+    for (i, handle) in handles_to_join.into_iter().enumerate() {
+        if let Err(e) = handle.join() {
+            eprintln!(
+                "Main: System thread {} (associated with an earlier logged Tx) panicked: {:?}",
+                i, e
+            );
+        }
+    }
+    println!("Phase 4 complete. All threads joined.");
+
     send_attempts
 }
 
