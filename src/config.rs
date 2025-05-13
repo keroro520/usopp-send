@@ -1,8 +1,8 @@
 use serde::Deserialize;
-use std::fs;
-use std::path::Path;
+use std::{error::Error, fs::File, io::BufReader, path::PathBuf};
 
-#[derive(Deserialize, Debug, PartialEq)] // Added PartialEq for comparison in tests
+/// Represents the application configuration loaded from `config.json`.
+#[derive(Deserialize, Debug)]
 pub struct Config {
     pub rpc_urls: Vec<String>,
     pub keypair_path_1: String,
@@ -10,17 +10,35 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn load(path_str: &str) -> Result<Self, String> {
-        let path = Path::new(path_str);
-        if !path.exists() {
-            return Err(format!("Configuration file not found at: {}", path_str));
-        }
+    /// Loads configuration from the specified file path.
+    ///
+    /// The path is expected to point to a JSON file structured according
+    /// to the `Config` definition.
+    pub fn load(path: &str) -> Result<Self, Box<dyn Error>> {
+        let file = File::open(path)?;
+        let reader = BufReader::new(file);
+        let config: Config = serde_json::from_reader(reader)?;
+        Ok(config)
+    }
 
-        let contents = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read configuration file {}: {}", path_str, e))?;
+    /// Expands a path string, resolving tilde (~) to the user's home directory.
+    fn expand_path(path_str: &str) -> Result<PathBuf, String> {
+        let expanded_path_cow = shellexpand::tilde(path_str);
+        Ok(PathBuf::from(expanded_path_cow.as_ref()))
+    }
 
-        serde_json::from_str(&contents)
-            .map_err(|e| format!("Failed to parse configuration file {}: {}", path_str, e))
+    /// Returns the expanded `PathBuf` for `keypair_path_1`.
+    ///
+    /// Handles tilde expansion (e.g., `~/path/to/key.json`).
+    pub fn keypair_path_1_expanded(&self) -> Result<PathBuf, String> {
+        Self::expand_path(&self.keypair_path_1)
+    }
+
+    /// Returns the expanded `PathBuf` for `keypair_path_2`.
+    ///
+    /// Handles tilde expansion.
+    pub fn keypair_path_2_expanded(&self) -> Result<PathBuf, String> {
+        Self::expand_path(&self.keypair_path_2)
     }
 }
 
@@ -65,10 +83,8 @@ mod tests {
         write!(tmp_file, "invalid json content").unwrap();
         let result = Config::load(tmp_file.path().to_str().unwrap());
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("Failed to parse configuration file")
-        );
+        assert!(result
+            .unwrap_err()
+            .contains("Failed to parse configuration file"));
     }
 }
