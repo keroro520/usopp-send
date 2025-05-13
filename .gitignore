@@ -3,3 +3,4 @@
 /.public_key                                                                      
 /metrics.json                                                                     
 /benchmark_report.md
+config.json
