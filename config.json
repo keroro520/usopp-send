@@ -1,0 +1,8 @@
+{
+  "rpc_urls": [
+    "https://api.devnet.solana.com",
+    "https://devnet.helius-rpc.com/?api-key=YOUR_API_KEY_HERE" 
+  ],
+  "keypair_path_1": "~/.config/solana/id.json",
+  "keypair_path_2": "~/.config/solana/recipient_id.json"
+} 
