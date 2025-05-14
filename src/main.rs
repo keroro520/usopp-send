@@ -7,16 +7,70 @@ mod transactions;
 use accounts::determine_account_roles;
 use cli::CliArgs;
 use config::Config;
-use monitoring::monitor_for_first_confirmation;
+use monitoring::{
+    monitor_for_first_confirmation, NonWinningTransactionOutcome, WinningTransactionInfo,
+};
 use solana_client::rpc_client::RpcClient;
+use std::collections::HashMap;
 use std::{process::ExitCode, time::Duration};
 use transactions::{
     construct_conflicting_transactions, send_transactions_concurrently,
-    simulate_transactions_concurrently,
+    simulate_transactions_concurrently, SendAttempt,
 };
 
 const OVERALL_MONITORING_TIMEOUT_SECONDS: u64 = 30;
 const POLLING_INTERVAL_MS: u64 = 1000;
+
+/// Generates a markdown table showing RPC endpoints, send durations, full signatures, and transaction statuses.
+fn generate_tx_summary_table(
+    winner: Option<&WinningTransactionInfo>,
+    non_winners: &[NonWinningTransactionOutcome],
+    send_attempts: &[SendAttempt],
+) -> String {
+    // Create header row
+    let mut table = String::from("| RPC | Sent Duration | Tx Full Signature | Tx Status |\n");
+    table.push_str("|---|---|---|---|\n");
+
+    // Create a hashmap for quick lookup of send durations
+    let send_map: HashMap<_, _> = send_attempts
+        .iter()
+        .map(|sa| (sa.original_signature, sa))
+        .collect();
+
+    // Add the winner first if there is one
+    if let Some(w) = winner {
+        let duration_str = match send_map.get(&w.signature) {
+            Some(sa) => format!("{}ms", sa.send_duration_ms),
+            None => "Unknown".to_string(),
+        };
+
+        table.push_str(&format!(
+            "| {} | {} | {} | 🏆 Confirmed ({}ms) |\n",
+            w.rpc_url,
+            duration_str,
+            w.signature.to_string(),
+            w.time_to_confirm_ms
+        ));
+    }
+
+    // Add all non-winning transactions
+    for nw in non_winners {
+        let duration_str = match send_map.get(&nw.original_signature) {
+            Some(sa) => format!("{}ms", sa.send_duration_ms),
+            None => "Unknown".to_string(),
+        };
+
+        table.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            nw.rpc_url,
+            duration_str,
+            nw.original_signature.to_string(),
+            nw.status_summary
+        ));
+    }
+
+    table
+}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -169,7 +223,7 @@ async fn main() -> ExitCode {
 
         println!("\n--- LIVE RUN: Monitoring Confirmations ---");
         match monitor_for_first_confirmation(
-            send_attempts,
+            send_attempts.clone(), // Clone to use later for table
             Duration::from_secs(OVERALL_MONITORING_TIMEOUT_SECONDS),
             Duration::from_millis(POLLING_INTERVAL_MS),
         )
@@ -185,6 +239,13 @@ async fn main() -> ExitCode {
                     winner.confirmation_status_description, winner.time_to_confirm_ms
                 );
                 println!("Confirmed in Slot: {}", winner.slot);
+
+                // Display the transaction summary table
+                println!("\n### Transaction Summary Table");
+                println!(
+                    "{}",
+                    generate_tx_summary_table(Some(&winner), &non_winning_outcomes, &send_attempts)
+                );
 
                 if !non_winning_outcomes.is_empty() {
                     println!("\nSummary of other transactions:");
@@ -209,6 +270,13 @@ async fn main() -> ExitCode {
                     OVERALL_MONITORING_TIMEOUT_SECONDS
                 );
                 if !non_winning_outcomes.is_empty() {
+                    // Display the transaction summary table without a winner
+                    println!("\n### Transaction Summary Table");
+                    println!(
+                        "{}",
+                        generate_tx_summary_table(None, &non_winning_outcomes, &send_attempts)
+                    );
+
                     println!("\nSummary of transactions attempted:");
                     for outcome in non_winning_outcomes {
                         println!(
