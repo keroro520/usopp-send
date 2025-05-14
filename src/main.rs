@@ -27,17 +27,14 @@ fn generate_tx_summary_table(
     non_winners: &[NonWinningTransactionOutcome],
     send_attempts: &[SendAttempt],
 ) -> String {
-    // Create header row
     let mut table = String::from("| RPC | Tx Status | Sent Duration | Tx Full Signature |\n");
     table.push_str("|---|---|---|---|\n");
 
-    // Create a hashmap for quick lookup of send durations
     let send_map: HashMap<_, _> = send_attempts
         .iter()
         .map(|sa| (sa.original_signature, sa))
         .collect();
 
-    // Add the winner first if there is one
     if let Some(w) = winner {
         let duration_str = match send_map.get(&w.signature) {
             Some(sa) => format!("{}ms", sa.send_duration_ms),
@@ -53,7 +50,6 @@ fn generate_tx_summary_table(
         ));
     }
 
-    // Add all non-winning transactions
     for nw in non_winners {
         let duration_str = match send_map.get(&nw.original_signature) {
             Some(sa) => format!("{}ms", sa.send_duration_ms),
@@ -223,7 +219,7 @@ async fn main() -> ExitCode {
 
         println!("\n--- LIVE RUN: Monitoring Confirmations ---");
         match monitor_for_first_confirmation(
-            send_attempts.clone(), // Clone to use later for table
+            send_attempts.clone(),
             Duration::from_secs(OVERALL_MONITORING_TIMEOUT_SECONDS),
             Duration::from_millis(POLLING_INTERVAL_MS),
         )
@@ -240,7 +236,6 @@ async fn main() -> ExitCode {
                 );
                 println!("Confirmed in Slot: {}", winner.slot);
 
-                // Display the transaction summary table
                 println!("\nThe following table summarizes all transactions and their outcomes:");
                 println!("- RPC: The RPC endpoint used for sending the transaction");
                 println!("- Tx Status: Final status of the transaction (🏆 indicates winner)");
@@ -275,7 +270,6 @@ async fn main() -> ExitCode {
                     OVERALL_MONITORING_TIMEOUT_SECONDS
                 );
                 if !non_winning_outcomes.is_empty() {
-                    // Display the transaction summary table without a winner
                     println!(
                         "\nThe following table summarizes all transactions and their outcomes:"
                     );

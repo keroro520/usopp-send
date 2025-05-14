@@ -4,13 +4,12 @@ use solana_client::rpc_response::RpcSimulateTransactionResult;
 use solana_sdk::{
     message::Message, signature::Signature, system_instruction, transaction::Transaction,
 };
-use std::thread as std_thread; // Added for system threads
+use std::thread as std_thread;
 use std::{error::Error, time::Instant};
 use tokio::runtime::Builder as TokioRuntimeBuilder;
-use tokio::sync::oneshot; // Added for oneshot channels // Added for thread-local Tokio runtimes
+use tokio::sync::oneshot;
 
 // Minimum balance to leave in sender's account after a transaction, in lamports.
-// This should cover potential future transaction fees or leave a small dust amount.
 const MIN_SENDER_RESERVE_LAMPORTS: u64 = 5_000; // Default rent-exempt minimum + a bit
 
 /// Represents a signed transaction ready to be sent to a specific RPC node.
@@ -18,19 +17,19 @@ const MIN_SENDER_RESERVE_LAMPORTS: u64 = 5_000; // Default rent-exempt minimum +
 pub struct PreparedTransaction {
     pub rpc_url: String,
     pub transaction: Transaction,
-    pub signature: Signature, // Base58 encoded string
+    pub signature: Signature,
     pub amount_lamports: u64,
 }
 
 /// Holds the result of a single transaction send attempt.
-#[derive(Debug, Clone)] // Added Clone for use in monitoring
+#[derive(Debug, Clone)]
 pub struct SendAttempt {
     pub rpc_url: String,
-    pub original_signature: Signature, // The signature of the transaction we attempted to send
+    pub original_signature: Signature,
     pub amount_lamports: u64,
-    pub send_result: Result<Signature, String>, // Ok(signature_returned_by_rpc) or Err(error_message)
-    pub send_start_instant: Instant,            // When this specific send operation began
-    pub send_duration_ms: u128,                 // Duration of the send_transaction RPC call
+    pub send_result: Result<Signature, String>,
+    pub send_start_instant: Instant,
+    pub send_duration_ms: u128,
 }
 
 /// Holds the result of a single transaction simulation attempt.
@@ -39,7 +38,7 @@ pub struct SimulationAttempt {
     pub rpc_url: String,
     pub original_signature: Signature,
     pub amount_lamports: u64,
-    pub simulation_result: Result<RpcSimulateTransactionResult, String>, // Ok contains logs, units consumed etc.
+    pub simulation_result: Result<RpcSimulateTransactionResult, String>,
     pub simulation_duration_ms: u128,
 }
 
@@ -50,7 +49,7 @@ pub fn construct_conflicting_transactions(
     sender_account: &AccountInfo,
     recipient_account: &AccountInfo,
     rpc_urls: &[String],
-    rpc_client: &RpcClient, // Pass in the RpcClient for fetching blockhash
+    rpc_client: &RpcClient,
 ) -> Result<Vec<PreparedTransaction>, Box<dyn Error>> {
     if rpc_urls.is_empty() {
         return Err("No RPC URLs provided for transaction construction.".into());
@@ -147,17 +146,15 @@ pub async fn send_transactions_concurrently(
 
     let mut thread_setups = Vec::with_capacity(num_transactions);
 
-    // Loop 1: Create threads and store (handle, sender_to_thread, receiver_for_result_from_thread, rpc_url_for_logging)
     for i in 0..num_transactions {
         let rpc_url_for_thread_logging = prepared_transactions_input[i].rpc_url.clone();
 
         let (tx_to_thread, rx_from_main_for_tx) = oneshot::channel::<PreparedTransaction>();
         let (tx_from_thread_for_result, rx_for_main_for_result) = oneshot::channel::<SendAttempt>();
 
-        let rpc_url_for_closure = rpc_url_for_thread_logging.clone(); // Clone for the closure
+        let rpc_url_for_closure = rpc_url_for_thread_logging.clone();
 
         let handle = std_thread::spawn(move || {
-            // Closure takes ownership of rpc_url_for_closure
             let runtime_result = TokioRuntimeBuilder::new_multi_thread().enable_all().build();
 
             let runtime = match runtime_result {
@@ -165,9 +162,8 @@ pub async fn send_transactions_concurrently(
                 Err(e) => {
                     eprintln!(
                         "Thread for future RPC {}: Failed to create Tokio runtime: {}. Thread will exit.",
-                        rpc_url_for_closure, e // Use the cloned value for closure
+                        rpc_url_for_closure, e
                     );
-                    // tx_from_thread_for_result is dropped, so rx_for_main_for_result.await in main task will error.
                     return;
                 }
             };
@@ -175,7 +171,7 @@ pub async fn send_transactions_concurrently(
             runtime.block_on(async {
                 println!(
                     "Thread for future RPC {}: Started, waiting for transaction...",
-                    rpc_url_for_closure // Use the cloned value for closure
+                    rpc_url_for_closure
                 );
                 match rx_from_main_for_tx.await {
                     Ok(prep_tx) => {
@@ -213,7 +209,7 @@ pub async fn send_transactions_concurrently(
                         };
 
                         let attempt = SendAttempt {
-                            rpc_url: prep_tx.rpc_url.clone(), // Ensure all fields are from prep_tx
+                            rpc_url: prep_tx.rpc_url.clone(),
                             original_signature: prep_tx.signature,
                             amount_lamports: prep_tx.amount_lamports,
                             send_result: send_result_outcome,
@@ -229,17 +225,15 @@ pub async fn send_transactions_concurrently(
                             );
                         }
                     }
-                    Err(_) => { // RecvError from oneshot channel
+                    Err(_) => {
                         eprintln!(
                             "Thread for future RPC {}: Failed to receive transaction from main. Channel closed. Thread will exit.",
-                            rpc_url_for_closure // Use the cloned value for closure
+                            rpc_url_for_closure
                         );
-                        // tx_from_thread_for_result is dropped, so rx_for_main_for_result.await in main task will error.
                     }
                 }
             });
         });
-        // Push the original rpc_url_for_thread_logging (or another clone if it was also needed elsewhere)
         thread_setups.push((
             handle,
             tx_to_thread,
@@ -258,7 +252,6 @@ pub async fn send_transactions_concurrently(
     let mut result_collectors = Vec::with_capacity(num_transactions);
     let mut handles_to_join = Vec::with_capacity(num_transactions);
 
-    // Loop 2: Send transactions to threads.
     for (prep_tx, (handle, sender_to_thread, result_receiver, _thread_rpc_url_for_log)) in
         prepared_transactions_input
             .into_iter()
@@ -279,7 +272,6 @@ pub async fn send_transactions_concurrently(
             );
         }
         handles_to_join.push(handle);
-        // Store details for logging in case of result collection failure
         result_collectors.push((
             result_receiver,
             log_sig_on_dispatch_fail,
@@ -301,7 +293,6 @@ pub async fn send_transactions_concurrently(
                 send_attempts.push(attempt);
             }
             Err(_) => {
-                // RecvError from oneshot channel
                 eprintln!(
                     "Main: Failed to receive result from thread for Tx (original sig: {}, RPC: {}). Channel closed. Thread may have failed/panicked.",
                     original_sig_for_error, rpc_url_for_error
@@ -360,7 +351,6 @@ pub async fn simulate_transactions_concurrently(
 
             let (simulation_status_output_str, final_sim_result_for_struct) = match result {
                 Ok(response) => {
-                    // Access fields through response.value
                     let sim_value = response.value;
                     let output = if sim_value.err.is_some() {
                         format!(
@@ -388,7 +378,7 @@ pub async fn simulate_transactions_concurrently(
                 "Tx (original sig: {}) on RPC {}: {}. Time: {}ms",
                 prep_tx.signature,
                 prep_tx.rpc_url,
-                simulation_status_output_str, // Use the formatted string
+                simulation_status_output_str,
                 duration.as_millis()
             );
 
@@ -396,7 +386,7 @@ pub async fn simulate_transactions_concurrently(
                 rpc_url: prep_tx.rpc_url,
                 original_signature: prep_tx.signature,
                 amount_lamports: prep_tx.amount_lamports,
-                simulation_result: final_sim_result_for_struct, // Assign the processed result
+                simulation_result: final_sim_result_for_struct,
                 simulation_duration_ms: duration.as_millis(),
             }
         });
