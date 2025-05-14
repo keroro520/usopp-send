@@ -21,14 +21,14 @@ use transactions::{
 const OVERALL_MONITORING_TIMEOUT_SECONDS: u64 = 30;
 const POLLING_INTERVAL_MS: u64 = 1000;
 
-/// Generates a markdown table showing RPC endpoints, send durations, full signatures, and transaction statuses.
+/// Generates a markdown table showing RPC endpoints, transaction statuses, send durations, and full signatures.
 fn generate_tx_summary_table(
     winner: Option<&WinningTransactionInfo>,
     non_winners: &[NonWinningTransactionOutcome],
     send_attempts: &[SendAttempt],
 ) -> String {
     // Create header row
-    let mut table = String::from("| RPC | Sent Duration | Tx Full Signature | Tx Status |\n");
+    let mut table = String::from("| RPC | Tx Status | Sent Duration | Tx Full Signature |\n");
     table.push_str("|---|---|---|---|\n");
 
     // Create a hashmap for quick lookup of send durations
@@ -45,11 +45,11 @@ fn generate_tx_summary_table(
         };
 
         table.push_str(&format!(
-            "| {} | {} | {} | 🏆 Confirmed ({}ms) |\n",
+            "| {} | 🏆 Confirmed ({}ms) | {} | {} |\n",
             w.rpc_url,
+            w.time_to_confirm_ms,
             duration_str,
-            w.signature.to_string(),
-            w.time_to_confirm_ms
+            w.signature.to_string()
         ));
     }
 
@@ -63,9 +63,9 @@ fn generate_tx_summary_table(
         table.push_str(&format!(
             "| {} | {} | {} | {} |\n",
             nw.rpc_url,
+            nw.status_summary,
             duration_str,
-            nw.original_signature.to_string(),
-            nw.status_summary
+            nw.original_signature.to_string()
         ));
     }
 
@@ -243,9 +243,9 @@ async fn main() -> ExitCode {
                 // Display the transaction summary table
                 println!("\nThe following table summarizes all transactions and their outcomes:");
                 println!("- RPC: The RPC endpoint used for sending the transaction");
+                println!("- Tx Status: Final status of the transaction (🏆 indicates winner)");
                 println!("- Sent Duration: Time taken to send the transaction to the RPC node");
-                println!("- Tx Full Signature: The complete transaction signature");
-                println!("- Tx Status: Final status of the transaction (🏆 indicates winner)\n");
+                println!("- Tx Full Signature: The complete transaction signature\n");
                 println!("### Transaction Summary Table");
                 println!(
                     "{}",
@@ -280,9 +280,9 @@ async fn main() -> ExitCode {
                         "\nThe following table summarizes all transactions and their outcomes:"
                     );
                     println!("- RPC: The RPC endpoint used for sending the transaction");
+                    println!("- Tx Status: Final status of the transaction");
                     println!("- Sent Duration: Time taken to send the transaction to the RPC node");
-                    println!("- Tx Full Signature: The complete transaction signature");
-                    println!("- Tx Status: Final status of the transaction\n");
+                    println!("- Tx Full Signature: The complete transaction signature\n");
                     println!("### Transaction Summary Table");
                     println!(
                         "{}",
