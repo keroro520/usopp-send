@@ -241,7 +241,12 @@ async fn main() -> ExitCode {
                 println!("Confirmed in Slot: {}", winner.slot);
 
                 // Display the transaction summary table
-                println!("\n### Transaction Summary Table");
+                println!("\nThe following table summarizes all transactions and their outcomes:");
+                println!("- RPC: The RPC endpoint used for sending the transaction");
+                println!("- Sent Duration: Time taken to send the transaction to the RPC node");
+                println!("- Tx Full Signature: The complete transaction signature");
+                println!("- Tx Status: Final status of the transaction (🏆 indicates winner)\n");
+                println!("### Transaction Summary Table");
                 println!(
                     "{}",
                     generate_tx_summary_table(Some(&winner), &non_winning_outcomes, &send_attempts)
@@ -271,7 +276,14 @@ async fn main() -> ExitCode {
                 );
                 if !non_winning_outcomes.is_empty() {
                     // Display the transaction summary table without a winner
-                    println!("\n### Transaction Summary Table");
+                    println!(
+                        "\nThe following table summarizes all transactions and their outcomes:"
+                    );
+                    println!("- RPC: The RPC endpoint used for sending the transaction");
+                    println!("- Sent Duration: Time taken to send the transaction to the RPC node");
+                    println!("- Tx Full Signature: The complete transaction signature");
+                    println!("- Tx Status: Final status of the transaction\n");
+                    println!("### Transaction Summary Table");
                     println!(
                         "{}",
                         generate_tx_summary_table(None, &non_winning_outcomes, &send_attempts)
