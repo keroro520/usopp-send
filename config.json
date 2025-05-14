@@ -1,7 +1,0 @@
-{
-  "rpc_urls": [
-    "https://few-stylish-sanctuary.solana-devnet.quiknode.pro/9da60d3851f306c2f6ffee306fd02cfa37e2e244"
-  ],
-  "keypair_path_1": "~/workspace/usopp-send-workspace/usopp-send/.private_key_1",
-  "keypair_path_2": "~/workspace/usopp-send-workspace/usopp-send/.private_key_2"
-} 
